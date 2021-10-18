@@ -23,9 +23,9 @@ library(ggpubr)
 
 The following is a working document written in R markdown. The objective in the code outlined by this document is to first determine the country of affiliation of published works recorded in the PetDB database of geochemical data.
 
-The dois of PetDB records were retrieved by data mining and are stored in the file "specimen_locations_new.csv".
+The dois of PetDB records were retrieved by web scraping using Python (code here https://github.com/GeoCoLab/notebooks/tree/main/specimen-locations) and are stored in the file "PetDB_specimen_locations.csv".
 
-These dois are then used (in Sections 1 and 2) to manually search the Web of Science database to retrievev author address data for ~1500 publications.
+These dois are used (in Sections 1 and 2) to manually search the Web of Science database to retrieve author address data for ~1500 publications.
 
 The bulk of the code which follows is concerned with automatically detecting countries in those addresses and cleaning up various errors and difficulties with the data.
 
