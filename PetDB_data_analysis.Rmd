@@ -1,0 +1,844 @@
+---
+title: "PetDB data analysis"
+author: "Elliot Carter"
+date: "18/10/2021"
+output: html_document
+---
+
+<!-- to ouput .md for blog use:
+output:
+  md_document:
+    variant: markdown_github -->
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(maps)
+library(viridis)
+library(ggpubr)
+```
+
+## Geographic analysis of PetDB records
+
+The following is a working document written in R markdown. The objective in the code outlined by this document is to first determine the country of affiliation of published works recorded in the PetDB database of geochemical data.
+
+The dois of PetDB records were retrieved by data mining and are stored in the file "specimen_locations_new.csv".
+
+These dois are then used (in Sections 1 and 2) to manually search the Web of Science database to retrievev author address data for ~1500 publications.
+
+The bulk of the code which follows is concerned with automatically detecting countries in those addresses and cleaning up various errors and difficulties with the data.
+
+Finally, the datasets are combined to give a record of the country from which the samples, authors and 1st author derive for ~1500 geochemical publications.
+
+In the final sections some preliminary data analysis is made looking at the patterns of: which countries tend to conduct research domestically and abroad; which are most and least subject to other countries' research; and which are most and least likely to include local researchers as co-authors when researching samples from abroad.
+
+## 1 Make list of DOIs to search Web of Science 
+
+```{r search web of science}
+
+# read in scraped PetDB data
+# scaping done using Jupiter notebook 
+# https://github.com/GeoCoLab/notebooks/tree/main/specimen-locations 
+refs<-read.csv("PetDB_specimen_locations.csv", encoding = "UTF-8")
+
+# filter out records with no doi or no specimen location (mostly deep ocean samples)
+dois<-refs%>%
+  filter(specimen_locations!="", doi!="")%>%
+  pull(doi)
+
+# collapse vector of dois into single string separated by " OR "
+string<-paste(dois, collapse = " OR ")
+
+# output search string to text file for easier copy/pasting
+# if it doesn't already exist (because slow!)
+if(!file.exists("search_string.txt")){
+  write.table(string, "search_string.txt", row.names = F)
+}
+
+```
+
+##   2. Manually search Web of Science by DOI
+
+Search done at https://www.webofscience.com/wos/woscc/summary/1bd1f26a-e825-446a-ba7f-4cc2e8126141-0bad9599/relevance/1
+
+From 2030 DOIs found 1493 records
+
+Results in "WoS_records.csv"
+
+
+##   3. Get list of countries
+
+List prepared from list of all world countries and territories with an ISO code at XXX
+
+Various simplifications and synomyms have been added to give a unified preferred name to all affiliation and sample locations
+
+This allows us to match these later in the analysis
+
+```{r string matching}
+# get list of countries
+countries<-read.csv("countries.csv")
+head(countries)%>%as_tibble()
+
+# make capitalised vector of countries
+country<-toupper(countries$Name)
+```
+
+##   4. Load Web of Science data and tidy up
+
+All records returned by manual doi search at Web of Science loaded in a dataframe.
+
+Each step is repeated for all authors (the Addresses field =>> add) and the corresponding author (the Reprint.Addresses field =>> corradd). The latter is taken to be the first author hereafter.
+
+```{r load data}
+# Read in Web of Science data
+wos<-read.csv("WoS_records.csv")
+# str(wos) # check structure if necessary
+```
+
+Key fields from Web of Science (WoS) data
+
+```{r wos output, echo=F}
+select(wos, Addresses, Reprint.Addresses, DOI, Publication.Year, Funding.Orgs)%>%
+  as_tibble()%>%
+  head()
+```
+
+Cleaning up WoS data
+
+1. filter out missing addresses
+2. capitalise everything
+3. add spaces after every comma (to avoid words running together once punctuation removed)
+4. remove all punctuation
+5. split each address into a vector of single words
+
+```{r cleaning data}
+# filter out records with no address
+# all author addresses
+add<-filter(wos, Addresses!="")%>% # capitalise
+  pull(Addresses)%>%
+  toupper()
+
+# corresponding author address
+corradd<-filter(wos, Reprint.Addresses!="")%>% # capitalise
+  pull(Reprint.Addresses)%>%
+  toupper()
+
+# indexes (for later)
+numbers<-1:length(add)
+numbers2<-1:length(corradd)
+
+#length(add)
+# add space after commas to avoid concatenated words after removing punctuation e.g. KeilGermany 
+add2<-lapply(add, function(x) gsub(",",", ",x))
+corradd2<-lapply(corradd, function(x) gsub(",",", ",x))
+
+# remove all punctuation
+gadd<-lapply(add2, function(x) gsub("[[:punct:]\n]","",x))
+gcorradd<-lapply(corradd2, function(x) gsub("[[:punct:]\n]","",x))
+
+# split each address into single words whereever there's a space
+# causes issues with two word countries e.g. South Africa which have to be dealt with
+sadd<-lapply(gadd, function(x) strsplit(x, " ")%>%unlist())
+scorradd<-lapply(gcorradd, function(x) strsplit(x, " ")%>%unlist())
+
+# make all words upper case to avoid matching issues between capitalised and proper case spellings
+cadd<-lapply(sadd, toupper)
+ccorradd<-lapply(scorradd, toupper)
+```
+
+Addresses field is now a list with each list element containing a vector of every part of the address
+
+```{r address example, echo=F}
+add[1]
+
+```
+
+becomes
+
+```{r clean address example, echo=F}
+cadd[1]
+
+```
+
+## 5. Match to countries
+
+Now we can match words in each vector to our list of countries
+
+```{r match to countries}
+# string match each element of address list to list of countries
+ladd<-lapply(cadd, function(x) x[which(x %in% country)] )
+lcorradd<-lapply(ccorradd, function(x) x[which(x %in% country)] )
+```
+
+and check the ouput
+
+```{r matching output}
+# check output
+ladd[1:5]
+
+```
+
+Because we split into single words this won't have worked for multi-word country names (e.g. South Africa)
+
+We need to deal with these separately
+
+```{r 2+ word countries}
+# subset of countries with spaces in name
+longcountry<-countries$Name[str_detect(countries$Name, " ")]
+
+# for each country find addresses which match
+findlong<-lapply(longcountry, function(x) str_detect(toupper(add), pattern = toupper(x)))
+findlong2<-lapply(longcountry, function(x) str_detect(toupper(corradd), pattern = toupper(x)))
+
+# give each list element of findlong the name of the corresponding country
+names(findlong)<-longcountry
+names(findlong2)<-longcountry
+
+# sum no. of matches for each country
+sums<-lapply(findlong, sum)
+sums2<-lapply(findlong2, sum)
+
+# subset of "long countries" which occur in addresses list
+longcountry[sums>0]
+longcountry[sums2>0]
+```
+
+We make a helper function which acts on an index variable x (i.e. 1:length of list) using lapply()
+
+Takes a country name, the list of addresses (add or corradd) and a parsed list (e.g. nadd) as inputs
+
+If it detects the country name in element x of add then that country is appended to the to corresponding element of the parsed list
+
+Otherwise the parsed list is left unchanged
+
+```{r appendCountry function}
+# make helper function to add a country to a list element
+appendCountry <- function(x, country_name, parsed_list, addresses_list=add) {
+  name<-toupper(country_name)
+  address<-toupper(addresses_list[[x]])
+  if(str_detect(address, pattern=name)){
+    c(parsed_list[[x]], name)
+    } else {parsed_list[[x]]}
+}
+```
+
+We then loop through the list of "long countries" (ones with 2+ words) and apply our helper function to the entire address list, adding the country in question to the parsed address list (nadd) for any records which match the country in question
+
+```{r loop 4 long countries}
+# index for lapply within loop (on j)
+i<-1:length(ladd)
+# copy ladd to new list to which matching long countries will be added
+nadd<-ladd 
+# pull out subset of long countries which occur in dataset
+longcountry_use<-longcountry[sums>0]
+
+for(j in 1:length(longcountry_use)){
+  print(paste0(longcountry_use[j], " (+", sums[longcountry_use[j]], ")"))
+  nadd<-lapply(i, function(x) appendCountry(x, longcountry_use[j], nadd))
+}
+```
+
+We then repeat this exercise for the corresponding author addresses
+
+```{r loop 4 corr. author long countries}
+# index
+i2<-1:length(lcorradd)
+# copy parsed list
+ncorradd<-lcorradd
+# subset countries which appear
+longcountry_use2<-longcountry[sums2>0]
+
+for(j in 1:length(longcountry_use2)){
+  print(paste0(longcountry_use2[j], " (+", sums2[longcountry_use2[j]], ")"))
+  ncorradd<-lapply(i2, function(x) appendCountry(x, longcountry_use2[j], ncorradd, addresses_list = corradd))
+}
+```
+NB: this approach doesn't work well for single word countries due to too many partial matches (e.g. US on authors names) and getting a universally applicable regex query is hard!
+
+## 6. Multiple corresponding authors
+
+A few records have multiple addresses listed as corresponding authors.
+
+Making the assumption that the first listed is the true corresponding author we need to find this to give a single first author affiliation.
+
+```{r fing multiple 1st author}
+# Determine length of vector of countries for each element of parsed corr. author list
+corrlength<-lapply(ncorradd, function (x) x %>% unique() %>% length())%>%unlist()
+# any with >1 have a problem with multiple
+multiples<-i2[corrlength>1]
+```
+
+For example:
+```{r multiple example}
+ncorradd[[multiples[3]]]
+```
+
+We define a helper function to find the first mentioned country in the address list
+
+Acts on an index variable i (i.e 1:length of address list) to find the start (and end) position in the address list (corradd) of each of the countries listed in the parsed address list (ncorradd - e.g. "CHINA", "AUSTRALIA", "SPAIN") and combines in a data frame
+
+By filtering for the smallest starting position then pulling the country field the first occuring country is returns
+
+```{r firstFirst function}
+findFirst<-function(i){
+  data.frame(str_locate(toupper(corradd[i]), ncorradd[[i]]))%>%
+    mutate(country = ncorradd[[i]])%>%
+    filter(start==min(start))%>%
+    unique()%>%
+    pull(country)
+}
+```
+
+e.g. for the example above
+
+```{r firstFirst example}
+findFirst(multiples[3])
+```
+if we look at he original address this is indeed the first entry
+
+```{r findFirst example}
+corradd[[multiples[3]]]
+```
+We then loop over the length of the parsed address list (ncorradd) applying the findFirst function wherever i occurs in multiples (our index of records with a multiple corresponding author issue)
+
+```{r loop findFirst}
+for(j in 1:length(ncorradd)){
+  if(j %in% multiples) {
+    #print(j)
+    ncorradd[[j]]<-findFirst(j)
+    #print(ncorradd[[j]])
+    }
+}
+```
+
+## 8 USA addresses giving only state codes
+
+Another issue in the data, mostly in older records, is United States addresses that only give a state two letter code (e.g. Woods Hole, MA)
+
+No easy way to automatically pattern match these. Matching on the two letter codes causing far more issues than it solves as it frequently picks up authors' initials.
+
+As it is only a small subset of samples the easiest is to manually trawl for the corresponding index numbers
+
+```{r fix US state codes}
+# find USA addresses that only give a state code (AARRRRGH)
+
+# IDs found manually by trawling through 
+USA_problems<-c(1312, 1319, 1326, 1331, 1334, 1336, 
+                1340, 1342, 1349, 1351, 1355, 1356, 
+                1357, 1365, 1366, 1370, 1376, 1378, 
+                1379, 1381, 1384, 1386, 1388, 1390, 
+                1392, 1393, 1394, 1396, 1397, 1398, 
+                1399, 1401, 1402, 1403, 1405, 1406, 
+                1408, 1409, 1417, 1418, 1421, 1422, 
+                1423, 1424, 1427, 1428, 1429, 1430, 
+                1432, 1435, 1437, 1438, 1440, 1443)
+
+# apply loop to append "USA" to parsed list whenever i is in USA_problems
+for(i in 1:length(nadd)){
+  if(i %in% USA_problems){
+    nadd[[i]]<-c(nadd[[i]], "USA")
+  }
+}
+```
+
+Finally we check if there are any record which have no matching author country
+
+```{r check for missing}
+## find any records with no matches
+NAs<-lapply(nadd, length)==0
+# index of unmatched records if needed for troubleshooting
+unmatched<-numbers[NAs]
+# check
+if(sum(NAs)==0) print("All good!")
+```
+
+## 9 Solving incorrect matches 
+
+Finally there are a few issues with incorrect matching which need to be manually solved 
+
+First Mexico matching New Mexico
+
+```{r Mexico vs New Mexico}
+### Fix "New Mexico" matches "Mexico"
+mex<-numbers[str_detect(add, pattern="Mexico|MEXICO")]
+nmex<-numbers[str_detect(add, pattern="New Mexico|NEW MEXICO")]
+
+# by inspection mexico and new mexico never appear together 
+# so matches for both are not really mexico
+mex_false<-mex[mex %in% nmex]
+
+# loop over nadd changing "MEXICO" to "USA" in all the mex_false records
+for(i in 1:length(nadd)){
+  if(i %in% mex_false){
+    nadd[[i]]<-replace(nadd[[i]], nadd[[i]]=="MEXICO", "USA")
+  }
+}
+
+# do the same corrections for corresponding author
+mex2<-numbers2[str_detect(corradd, pattern="Mexico|MEXICO")]
+nmex2<-numbers2[str_detect(corradd, pattern="New Mexico|NEW MEXICO")]
+mex_false2<-mex2[mex2 %in% nmex2]
+
+for(i in 1:length(ncorradd)){
+  if(i %in% mex_false2){
+    ncorradd[[i]]<-replace(ncorradd[[i]], ncorradd[[i]]=="MEXICO", "USA")
+  }
+}
+```
+
+Georgia matches the USA state
+
+```{r Georgia vs US State, echo=F}
+### Fix Georgia matching US state
+
+# by inspection all Georgia are the USA so replace all with loop
+georg<-numbers[str_detect(add, pattern="Georgia|GEORGIA")]
+
+for(i in 1:length(nadd)){
+  if(i %in% georg){
+    nadd[[i]]<-replace(nadd[[i]], nadd[[i]]=="GEORGIA", "USA")
+  }
+}
+
+# do the same for corresponding author
+georg2<-numbers2[str_detect(corradd, pattern="Georgia|GEORGIA")]
+
+for(i in 1:length(ncorradd)){
+  if(i %in% georg2){
+    ncorradd[[i]]<-replace(ncorradd[[i]], ncorradd[[i]]=="GEORGIA", "USA")
+  }
+}
+```
+
+Congo matches Democratic Republic of the Congo
+
+```{r Congo vs DRC, echo=F}
+
+### Check Congo vs. Dem. Rep. Congo
+# by inspection the only one matching "Congo" is DRC not Congo
+
+drc<-numbers[str_detect(add, pattern="Congo|CONGO")]
+nadd[[drc]]<-replace(nadd[[drc]], nadd[[drc]]=="CONGO", "THE DEMOCRATIC REPUBLIC OF THE CONGO")
+
+# no corresponding author records matching Congo 
+```
+
+## 10. Final bits of tidying up
+
+The final steps to get the data in a usable and graphable format are to 
+
+1. Keep only non-duplicate countries - for the time being we're not worried about the number of authors from a given country
+
+2. Link each parsed list element to it's position in the original address list. By making an ID variable we can then join the final datatable of author affiliations back to the original WoS data including dois etc. 
+
+3. Make the list into a dataframe
+
+```{r make dataframe}
+## final bits
+uadd<-lapply(nadd, unique)
+ucorradd<-lapply(ncorradd, unique)
+
+index<-1:length(uadd)
+index2<-1:length(ucorradd)
+
+dadd<-lapply(index, function(x) data.frame(name=uadd[[x]], ID=x))
+dcorradd<-lapply(index2, function(x) data.frame(name=ucorradd[[x]], ID=x))
+
+dfadd<-do.call(rbind.data.frame, dadd)
+dfcorradd<-do.call(rbind.data.frame, dcorradd)
+```
+
+The final output looks like this:
+
+```{r dataframe example, echo=F}
+head(dfadd)
+```
+
+We also want to replace non-unique country synonyms (e.g. Scotland, England, United Kingdom, UK) with a single preferred name from our table of countries
+
+To do this we join the dataframes (dfadd and dfcorradd) to the countries table (by name) and select the Preferred.Name field
+
+```{r country pref. names}
+## change countries to preferred names
+# e.g. England -> United Kingdom 
+
+pcadd<-inner_join(dfadd, mutate(countries, name=toupper(Name)), by="name")%>%
+  select(ID, Affiliation=Preferred.Name)%>%
+  unique()
+head(pcadd)
+
+pccorradd<-inner_join(dfcorradd, mutate(countries, name=toupper(Name)), by="name")%>%
+  select(ID, Affiliation_1st=Preferred.Name)%>%
+  unique()
+head(pccorradd)
+```
+
+In the tables we've made each reference/article has multiple lines (if there are multiple author affiliations)
+
+We can make a short version collapsing the affiliations into a comma separated list which is useful for some thing (e.g. validating the data)
+
+```{r short versions}
+pcadd_short<-pcadd%>%
+  group_by(ID)%>%
+  summarise(Affiliation=paste(Affiliation, collapse = ", "))
+head(pcadd_short)
+```
+
+## Join all the data together
+
+Now we have a nice neat list of country affiliations for each reference we can join these data back to the original WoS data table
+
+Using the doi field in the WoS data we can join to the specimen data mined from PetDB which includes the processed/geocoded sample locations (see external Python script)
+
+First we prepare the data. It's very important to filter out the missing addresses from WoS data like we did at the start otherwise the rows won't line up correcly
+
+Capitalising all the dois is likewise important and there are inconsistencies in upper and lower case between WoS and PetDB data which will prevent them joining correctly
+
+```{r prep WoS data}
+wos2<-wos%>%
+  # filter out missing addresses
+  filter(Addresses!="")%>% #
+  # add ID field and capitalise (and rename) DOI
+  mutate(ID=1:nrow(.), doi=toupper(DOI))
+```
+
+
+We also capitalise doi in our specimen data table (refs) and join it to our countries table to substitute in the preferred names so that countries are consistently named in both affiliation and specimen_country fields of the final data table
+
+```{r prep specimen data}
+refs2<-refs%>%
+  # capitalise doi
+  mutate(doi=toupper(doi), 
+         # remove all punctuation from specimen_locations
+         Name=gsub("[[:punct:]\n]","", specimen_locations))%>%
+  # join to countries table
+  full_join(countries, by="Name")%>%
+  # use preferred name and rename specimen_country
+  rename(specimen_country=Preferred.Name)
+```
+
+To be able to analyse the region from which articles or specimens derive we also prepare tables from the countries table, renaming fields to make things easier later
+
+```{r regions tables}
+# regions table to join
+regions1<-countries%>%
+  select(specimen_country=Preferred.Name, specimen_region=Region)%>%
+  unique()
+
+regions2<-countries%>%
+  select(Affiliation_1st=Preferred.Name, Region_1st=Region)%>%
+  unique()
+```
+
+Finally we can join everything together to have a single master table (and corresponding short version) combining the author affiliations, 1st author affiliations, specimen location and regions in one (big) table
+
+```{r join it all together!!}
+## join
+master<-inner_join(pcadd, wos2, by="ID")%>%
+  inner_join(refs2, by="doi")%>%
+  inner_join(pccorradd, by="ID")%>%
+  left_join(regions1, by="specimen_country")%>%
+  left_join(regions2, by="Affiliation_1st")
+
+master_short<-inner_join(pcadd_short, wos2, by="ID")%>%
+  inner_join(refs2, by="doi")%>%
+  inner_join(pccorradd, by="ID")%>%
+  left_join(regions1, by="specimen_country")%>%
+  left_join(regions2, by="Affiliation_1st")
+```
+
+The table has too many fields to easily view but we can look at a few key ones
+
+```{r master table example}
+
+master_short%>%
+  select(ID, doi, specimen_country, specimen_region, Affiliation, Affiliation_1st, Region_1st)%>%
+  #as_tibble()%>%
+  head()
+```
+
+Now we can do some stats and graphs!
+
+```{r prepare for stats}
+# add TRUE/FALSE column to master
+## does affiliation of author match specimen? (1 line per affiliation)
+master$national <- master$specimen_country == master$Affiliation
+## does affiliation of 1st author match specimen country?
+master$national_1st <- master$specimen_country == master$Affiliation_1st
+
+# summarise affiliation data
+master_forstats <- master %>%
+  # group by ID so end up with 1 row per record
+  group_by(ID) %>%
+  # use sum to detect if 1st author is local and if any author is local
+  # sum counts TRUE as 1 and FALSE as 0
+  summarise(Local_1st=sum(national_1st)/n(), Local_involved=sum(national)) %>%
+  # join to master_short to get access to other fields (lost during summary)
+  inner_join(master_short, by="ID") %>%
+  # categorise research as Domestic, foreign with local(s) involved, or solely foreign
+  mutate(category=case_when(Local_1st==1 ~ "Domestic",
+                            Local_1st==0 & Local_involved == 1 ~ "Foreign_involved",
+                            Local_1st==0 & Local_involved == 0 ~ "Foreign",
+                            TRUE ~ "Other"))%>%
+  select(ID, Affiliation_1st, Affiliation, specimen_country, category, Region_1st, specimen_region)
+```
+
+Stats by specimen location
+
+```{r stats specimen}
+# stats by specimen location
+stats_specimen_long <- master_forstats%>%
+  # need to make grouping variables factors or .drop option in group_by doesn't work
+  mutate(specimen_country=factor(specimen_country, levels=unique(countries$Preferred.Name)),
+         category=as.factor(category))%>%
+  group_by(specimen_country, category, .drop=FALSE)%>% # .drop = F is important to preserve cases where N=0
+  summarise(N=n())%>%
+  ungroup()
+
+stats_specimen <- stats_specimen_long %>%
+  pivot_wider(names_from = category, values_from = N)%>%
+  mutate(Total=Domestic+Foreign+Foreign_involved,
+         Parachute=log(ifelse(Total==0,NA,(Domestic+Foreign_involved)/Foreign)))
+```
+Stats by specimen region
+
+```{r stats specimen region, echo=F}
+# calculate same stats by region instead of country
+stats_specimen_region_long <- master_forstats %>%
+  # need to make grouping variables factors or .drop option in group_by doesn't work
+  mutate(specimen_region=as.factor(specimen_region),
+         category=as.factor(category))%>%
+  group_by(specimen_region, category, .drop=FALSE)%>% # .drop = F is important to preserve cases where N=0
+  summarise(N=n())%>%
+  ungroup()
+
+stats_specimen_region <- stats_specimen_region_long %>%
+  pivot_wider(names_from = category, values_from = N)%>%
+  mutate(Total=Domestic+Foreign+Foreign_involved,
+         Parachute=log(ifelse(Total==0, NA, (Domestic+Foreign_involved)/Foreign)))
+```
+
+Stats by first author
+
+```{r stats by 1st author}
+# stats by 1st author affiliation
+stats_affiliation_long <-master_forstats %>%
+  mutate(Affiliation_1st=factor(Affiliation_1st, levels=unique(countries$Preferred.Name)),
+         category=as.factor(category))%>%
+  group_by(Affiliation_1st, category, .drop=FALSE)%>%
+  summarise(N=n())%>%
+  ungroup()
+
+stats_affiliation <- stats_affiliation_long %>%
+  pivot_wider(names_from = category, values_from = N)%>%
+  mutate(Total=Domestic+Foreign+Foreign_involved,
+         Prop_foreign=ifelse(Total==0,NA,(Foreign+Foreign_involved)/Total),
+         Prop_incl_local=ifelse(Total==0,NA,Foreign_involved/(Foreign+Foreign_involved)))
+  
+
+
+```
+
+# Blog post
+
+
+## Exploring parachute science
+
+An important step for us in looking at how to address inequalities in access was to demonstrate quantitatively the existence and effects of such inequalities in analytical geoscience. In particular we have focused on exploring the extent of parachute science in analytical geoscience. Parachute science refers to science conducted by researchers from another country from that in which they are working, without local involvement. It’s negative effects include: concentration of expertise (or perceived expertise) away from the areas or communities which are subject to that expertise; ignorance of or exploitation of important local knowledge; lack of credit to local collaborators who may be instrumental to successful field trips among other things. We focused on parachute science as it is relatively easy to explore through quantitative data from published and freely available sources and therefore could be rigorously studied in the timeframe of the hackathon.
+
+In order to do this, we turned to the PetDB database. This is an online open access database of igneous geochemistry data. The big advantage of using this as the starting point for our analysis was that each sample recorded in the database has an associated grid reference. This greatly simplified the job of determining which country an article was about. Determining this information directly from the title or tags of an article would be extremely hard to automate reliably and very slow to do manually.
+
+## Data extraction
+
+The data for all records in the PetDB database were scraped using a Python script and the country of the samples determined from the grid reference (for the purposes of our analysis we included any seafloor samples collected within the exclusive economic zone of a country as well as onshore samples). The DOIs were used to manually search the Web of Science database, returning 1493 records with valid addresses. 
+The affiliation of first author and of the full author list was determined automatically using a script in the R programming language to string match the addresses to a list of all world countries. This was followed by several stages of semi-automated clean up to deal with mistakes and inconsistencies in the data. At each stage during development of the code, 50 records were randomly chosen and manually checked to assess the accuracy of the matching and only when no problems were found was it judged to be complete. The country for samples, 1st author and all authors were finally standardised to a list of preferred country names (e.g. England, UK, Scotland all became United Kingdom) to allow reliable matching of names.
+
+## Analysing the data
+The final dataset consists of 1426 references for which the affiliation of all authors and country could be determined (70 records returned by Web of Science included no address data). We categorised each as either Domestic, where the first author affiliation and country of sample origin matched; Foreign with local involvement, where the affiliation of someone other than the first author matched the country the samples were from; or Foreign where none of the authors’ affiliations matched the sample country.
+To understand if the extent of parachuate science varied by country, we summarised the data by country of sample origin and calculated for each country the parachute index, defined as the log of the ratio of publications (concerning a given country) which include local researchers to those which include no local researchers (Raja et al., 2021, https://doi.org/10.31223/X5802N).
+We also summarise the data by the country of the first author’s affiliation and calculated for each country the proportion of foreign research and the proportion of that foreign research which included local researchers.
+
+## Where are the samples from?
+
+```{r sample total, echo=F}
+stats_specimen %>%
+  filter(Total>10)%>%
+  arrange(-Total)%>%
+  mutate(specimen_country=factor(specimen_country, levels=.$specimen_country))%>%
+  #filter(N>5)%>%
+  ggplot(aes(specimen_country, Total))+
+  geom_col(aes(fill=log10(Total)), alpha=0.8)+
+  labs(x="Sample location", y="N publications")+
+  annotate(geom="text", x=30, y=50, label="N > 10 only", size=6, color="grey70")+
+  scale_fill_viridis(breaks=log10(c(3,10,30,100,300)), labels=c(3,10,30,100,300), name="Total")+
+  theme_minimal(base_size = 18)+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.2, hjust=1),
+        legend.position = c(0.95,0.7))
+```
+```{r save plot foreign, include=FALSE}
+ggsave("blog_images-01.pdf", path="./plots", height=5, width=7, useDingbats=F)
+```
+
+The largest number of publications concern samples from the United States and China (N>100) with Russia, South Africa and Canada (N>50) and Japan, Italy, Ethiopia, Australia, Ecuador, Portugal and Oman all well represented (N>25).
+
+Just from this graph, Ethiopia, Oman, Mexico, and Kenya jump out as being highly represented in the form of samples but (as we will see) little represented in the form of authorship and particularly first authorship. This might tend to suggest issues of "parachute science".
+
+This will explored in more detail below.
+
+## Parachute index
+
+Following the approach of Raja et al. (2021 preprint, available here: https://doi.org/10.31223/X5802N). We have calculated for each country **sampled** the "parachute index". This is defined as the log of the ratio of publications including local researchers to those not including researchers. 
+
+Negative numbers tend to imply a greater degree of parachute science while positive numbers imply a higher degree of domestic research (i.e. research on samples from a given country by researchers in that country)
+
+Plotting the parachute index by country of sample origin
+
+
+```{r parachute index, echo=F}
+pal<-c("#F55D3E", # Africa
+       "#820263", # Asia
+       "#F4E04D", # Carribean
+       "#F59F46", # C and S America
+       "#BBDFE8", # Europe
+       "#76BED0", # N America
+       "#47FFCB", # Oceania
+       "#00CC92") # Other
+
+stats_specimen %>%
+  inner_join(regions1, by="specimen_country")%>%
+  filter(!is.na(Parachute))%>%
+  arrange(-Parachute)%>%
+  mutate(specimen_country=factor(specimen_country, levels=.$specimen_country),
+         Parachute=case_when(Parachute==-Inf ~ -4,
+                             TRUE ~ Parachute))%>%
+  ggplot(aes(specimen_country, Parachute))+
+  geom_col(aes(fill=specimen_region), alpha=0.8)+
+  geom_hline(yintercept=0, linetype=2)+
+  geom_text(data=.%>%filter(Total>10, Parachute>0), aes(label=specimen_country, color=specimen_region), y=-0.1, angle=90, hjust=1)+
+  geom_text(data=.%>%filter(Total>10, Parachute<0), aes(label=specimen_country, color=specimen_region), y=0.1, angle=90, hjust=0)+
+  labs(x="Country of sample origin", y="Parachute index", fill="Region")+
+  fill_palette(pal)+
+  color_palette(pal[c(1:2,4:8)], guide=F)+
+  theme_minimal(base_size = 14)+
+  theme(axis.text.x = element_blank(), panel.grid.minor = element_blank(),
+        panel.grid.major.x = element_blank())
+```
+```{r save parachute index, include=FALSE}
+ggsave("blog_images-02.pdf", path="./plots", height=6, width=10, useDingbats=F)
+```
+
+
+There are two main things clear from this plot. Firstly, notwithstanding a few countries with high positive indices but few total publications at the far left of the plot, the countries with positive indices (showing high rates of local involvement) are dominated by those from Europe, North America and Asia (pale blues and purple) as well as New Zealand and Australia. At the other end of the spectrum on the right hand side of the graph, countries with negative parachute indices (showing high levels of parachute science with no local involvement) tend to be in Africa, Central and South America, the Caribbean and Oceania.
+
+It is particlarly notable just how many countries do not have a single publication with a local co-author. In several cases, including Botswana, Tonga and the N Marianas Islands this is despite 10 or more references in the database concering those countries. 
+
+## Stats by region
+
+Since there are quite a few countries with a small overall number of publications, these tendencies are perhaps more clearly shown by summarising the parachute index data by regions and plotting the results. 
+
+```{r parachute index regional, echo=F}
+
+stats_specimen_region %>%
+  filter(!is.na(Parachute))%>%
+  arrange(-Parachute)%>%
+  mutate(specimen_region=factor(specimen_region, levels=.$specimen_region),
+         Parachute=case_when(Parachute==-Inf ~ -4,
+                             TRUE ~ Parachute))%>%
+  ggplot(aes(specimen_region, Parachute))+
+  geom_col(aes(fill=log10(Total)), alpha=0.8)+
+  labs(x="", y="Parachute index", fill="Total\npublications")+
+  scale_fill_viridis(breaks=log10(c(3,10,30,100,300)), labels=c(3,10,30,100,300))+
+  theme_minimal(base_size = 14)+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.2, hjust=1))
+```
+```{r save plot foreign, include=FALSE}
+ggsave("blog_images-03.pdf", path="./plots", height=5, width=7, useDingbats=F)
+```
+
+## Which countries do the most research in other countries?
+
+It's also useful to look at the country of the first author. Where are the places doing the most parachute science? (rather than subject to it as the above graphs illustrate)
+
+First we recalculate similar summary statistics to those above for samples' country and region of origin. This time we use the affiliation of the 1st author of each publication as the variable to summarise on. 
+
+Instead of parachute index we calculate simply the proportion of foreign research conducted (relative to the total number of publications from that country) and the proportion of that foreign research in which there was at least 1 local collaborator included as an author.
+
+First we plot a bar chart showing the total publications from each country categorised as domestic, foreign and foreign with local involvement:
+
+```{r plot research categories, echo=F}
+### color pallette ###
+RYB<-c("#F55D3E", "#F7CB15", "#76BED0")
+
+stats_affiliation_long%>%
+  group_by(Affiliation_1st)%>%
+  mutate(Total=sum(N))%>%
+  filter(Total>10)%>%
+  arrange(-Total)%>%
+  mutate(Affiliation_1st=factor(Affiliation_1st, levels=unique(.$Affiliation_1st)))%>%
+  ggplot(aes(x=Affiliation_1st, y=N))+
+  geom_col(aes(fill=category), alpha=0.8)+
+  labs(x="1st Author Affiliation", y="No. publications", fill="Category")+
+  annotate("text", label="N>10 only", x="Spain", y=100, color="grey70", size=6)+
+  fill_palette(RYB)+
+  theme_minimal(base_size = 14)+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.2, hjust=1),
+        legend.position = c(0.85,0.8))
+```
+```{r save plot foreign, include=FALSE}
+ggsave("blog_images-04.pdf", path="./plots", height=5, width=7, useDingbats=F)
+```
+
+Is is clear from this chart that foreign research makes up a significant proportion of the publications for most of the countries with the largest numbers of publications (>50 publications). In particular, we can see that domestic research makes up a tiny proportion of the total output from the UK, France and Germany but that these countries have a large number of 1st authored papers, second only to the USA and China. 
+
+The USA and China have a somewhat larger proportion of domestic research and are the best represented in the dataset in terms of nubmer of first authored publications. 
+
+To look in more detail at the breakdown of research conducted abroad versus domestically we can plot the proportion of foreign research calculated above by country
+
+
+```{r plot prop. foreign, echo=F}
+stats_affiliation%>%
+  arrange(Prop_foreign)%>%
+  filter(!is.na(Prop_foreign))%>%
+  mutate(Affiliation_1st=factor(Affiliation_1st, levels=unique(.$Affiliation_1st)))%>%
+  ggplot(aes(x=Affiliation_1st, y=100*Prop_foreign))+
+  geom_col(aes(fill=log10(Total)), alpha=0.8)+
+  labs(x="Affiliation of 1st Author", y="Proportion of foreign research (%)")+
+  scale_fill_viridis(breaks=log10(c(3,10,30,100,300)), labels=c(3,10,30,100,300), name="Total\npublications")+
+  theme_minimal(base_size = 16)+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.2, hjust=1))
+```
+```{r save plot foreign, include=FALSE}
+ggsave("blog_images-05.pdf", path="./plots", height=5, width=8, useDingbats=F)
+```
+
+This plot reiterates several of the same features as the previous one. A large proportion of the published outputs from many European countries - including the UK, France and Germany - conduct a large proportion (>75% in most cases) of research abroad. 
+
+At the other end of the scale, on the left of the graph, countries with a large proportion of research conducted domestically are more typically in Africa, Asia or South America though Greece and Portugal also feature at this end of the graph.
+
+A number of countries at the right of the graph show 100% of foreign research. Many of these however are represented by only a handful of publications (purple colours) and may not be particularly representative.
+
+Lastly we can look at the proportion of foreign research which includes local collaborators:
+
+```{r plot prop incl. local, echo=F}
+stats_affiliation%>%
+  arrange(Prop_incl_local)%>%
+  filter(!is.na(Prop_incl_local), Total>5)%>%
+  mutate(Affiliation_1st=factor(Affiliation_1st, levels=unique(.$Affiliation_1st)),
+         Prop_incl_local=case_when(#Prop_incl_local==-Inf ~ -2,
+                                   T ~ Prop_incl_local))%>%
+  ggplot(aes(x=Affiliation_1st, y=100*Prop_incl_local))+
+  geom_col(aes(fill=log10(Foreign+Foreign_involved)), alpha=0.8)+
+  labs(x="Affiliation of 1st Author", y="Proportion of foreign research\n with local collaborators (%)")+
+  scale_fill_viridis(breaks=log10(c(3,10,30,100,300)), labels=c(3,10,30,100,300), name="Total foreign\nresearch\npublications")+
+  theme_minimal(base_size = 18)+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.2, hjust=1))
+```
+```{r save plot foreign, include=FALSE}
+ggsave("blog_images-06.pdf", path="./plots", height=5, width=9, useDingbats=F)
+```
+
+Of countries with a large number of publications based on foreign research (green and yellow colours), the USA, Australia, Germany, United Kingdom show the lowest apparent engagement with local researchers with <30% of publications including a local collaborator. Japan, China, Italy, France, South Africa and Canada are only slightly better with 30-50% of publications featuring a local co-author.
+
+A number of countries with 100% local collaboration have low number of total foreign research publication (purple colours) as in the previous plot and may not be representative. 
+
+On the limited data available, Mexico, Brazil, Czech Republic and Eqypt appear to show a high rate of engagement with local collaborators during foreign research. However, more data would be needed to establish this was representative.
