@@ -39,7 +39,7 @@ In the final sections some preliminary data analysis is made looking at the patt
 # read in scraped PetDB data
 # scaping done using Jupiter notebook 
 # https://github.com/GeoCoLab/notebooks/tree/main/specimen-locations 
-refs<-read.csv("PetDB_specimen_locations.csv", encoding = "UTF-8")
+refs<-read.csv("./data/PetDB_specimen_locations.csv", encoding = "UTF-8")
 
 # filter out records with no doi or no specimen location (mostly deep ocean samples)
 dois<-refs%>%
@@ -51,8 +51,8 @@ string<-paste(dois, collapse = " OR ")
 
 # output search string to text file for easier copy/pasting
 # if it doesn't already exist (because slow!)
-if(!file.exists("search_string.txt")){
-  write.table(string, "search_string.txt", row.names = F)
+if(!file.exists("./data/search_string.txt")){
+  write.table(string, "./data/search_string.txt", row.names = F)
 }
 
 ```
@@ -76,7 +76,7 @@ This allows us to match these later in the analysis
 
 ```{r string matching}
 # get list of countries
-countries<-read.csv("countries.csv")
+countries<-read.csv("./data/countries.csv")
 head(countries)%>%as_tibble()
 
 # make capitalised vector of countries
@@ -91,7 +91,7 @@ Each step is repeated for all authors (the Addresses field =>> add) and the corr
 
 ```{r load data}
 # Read in Web of Science data
-wos<-read.csv("WoS_records.csv")
+wos<-read.csv("./data/WoS_records.csv")
 # str(wos) # check structure if necessary
 ```
 
@@ -640,7 +640,7 @@ stats_affiliation <- stats_affiliation_long %>%
 ```
 
 # Blog post
-
+The following data analysis is also published as a blog with neater graphs here: https://geocolab.github.io/blog/blog2/
 
 ## Exploring parachute science
 
@@ -751,7 +751,7 @@ stats_specimen_region %>%
   theme_minimal(base_size = 14)+
   theme(axis.text.x = element_text(angle = 90, vjust = 0.2, hjust=1))
 ```
-```{r save plot foreign, include=FALSE}
+```{r save parachute index regional, include=FALSE}
 ggsave("blog_images-03.pdf", path="./plots", height=5, width=7, useDingbats=F)
 ```
 
@@ -784,7 +784,7 @@ stats_affiliation_long%>%
   theme(axis.text.x = element_text(angle = 90, vjust = 0.2, hjust=1),
         legend.position = c(0.85,0.8))
 ```
-```{r save plot foreign, include=FALSE}
+```{r save plot research categories, include=FALSE}
 ggsave("blog_images-04.pdf", path="./plots", height=5, width=7, useDingbats=F)
 ```
 
@@ -807,7 +807,7 @@ stats_affiliation%>%
   theme_minimal(base_size = 16)+
   theme(axis.text.x = element_text(angle = 90, vjust = 0.2, hjust=1))
 ```
-```{r save plot foreign, include=FALSE}
+```{r save prop. foreign, include=FALSE}
 ggsave("blog_images-05.pdf", path="./plots", height=5, width=8, useDingbats=F)
 ```
 
@@ -833,7 +833,7 @@ stats_affiliation%>%
   theme_minimal(base_size = 18)+
   theme(axis.text.x = element_text(angle = 90, vjust = 0.2, hjust=1))
 ```
-```{r save plot foreign, include=FALSE}
+```{r save prop incl. local, include=FALSE}
 ggsave("blog_images-06.pdf", path="./plots", height=5, width=9, useDingbats=F)
 ```
 
