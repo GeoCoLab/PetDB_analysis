@@ -2,13 +2,14 @@
 title: "PetDB data analysis"
 author: "Elliot Carter"
 date: "18/10/2021"
-output: html_document
----
-
-<!-- to ouput .md for blog use:
 output:
   md_document:
-    variant: markdown_github -->
+    variant: markdown_github
+---
+
+<!-- for readable local version use 
+output: html_document
+ -->
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
